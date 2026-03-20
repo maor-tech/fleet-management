@@ -546,6 +546,117 @@ def page_export(db, fx):
             file_name=f"Fleet_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+def page_pnl(db, fx):
+    st.markdown('<div class="page-title">💰 רווח והפסד · P&L Analysis</div>', unsafe_allow_html=True)
+
+    # ── Settings bar ────────────────────────────────────────────────
+    col_fx, col_info = st.columns([1,3])
+    with col_fx:
+        fx_use = st.number_input("שער חליפין $→₪", value=fx, step=0.01, format="%.2f", key="pnl_fx")
+    with col_info:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.info("הכנסה = מחירון USD × שער חליפין  |  עלות = מחיר ששולם לחברת ההשכרה (₪)")
+
+    # ── Grand totals ──────────────────────────────────────────────────
+    total_rev   = 0
+    total_cost  = 0
+    total_veh   = len(db)
+
+    for v in db:
+        cat = v.get("category", "Other")
+        co  = v.get("company", "")
+        rev  = PRICE_USD.get(cat, 2475) * fx_use
+        cost = COSTS_ILS.get(cat, {}).get(co) or 0
+        total_rev  += rev
+        total_cost += cost
+
+    total_profit = total_rev - total_cost
+    margin       = round(total_profit / total_rev * 100, 1) if total_rev else 0
+
+    c1,c2,c3,c4 = st.columns(4)
+    def kpi(col, val, label, color="#1B2A4A"):
+        with col:
+            st.markdown(f"""<div class="metric-card">
+                <div class="metric-val" style="color:{color}">{val}</div>
+                <div class="metric-lbl">{label}</div>
+            </div>""", unsafe_allow_html=True)
+
+    kpi(c1, f"₪{total_rev:,.0f}",    "הכנסה חודשית כוללת", "#1D9E75")
+    kpi(c2, f"₪{total_cost:,.0f}",   "עלות חודשית כוללת",  "#C62828")
+    kpi(c3, f"₪{total_profit:,.0f}", "רווח גולמי",          "#1D9E75" if total_profit >= 0 else "#C62828")
+    kpi(c4, f"{margin}%",            "מרג׳ין",               "#1D9E75" if margin >= 0 else "#C62828")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── P&L by Company ────────────────────────────────────────────────
+    st.markdown("#### לפי חברת השכרה")
+    co_rows = []
+    for co in COMPANIES:
+        veh  = [v for v in db if v.get("company") == co]
+        if not veh: continue
+        rev  = sum(PRICE_USD.get(v.get("category","Other"), 2475) * fx_use for v in veh)
+        cost = sum(COSTS_ILS.get(v.get("category",""), {}).get(co) or 0 for v in veh)
+        prof = rev - cost
+        mgn  = round(prof / rev * 100, 1) if rev else 0
+        co_rows.append({
+            "חברה":        co,
+            "רכבים":       len(veh),
+            "הכנסה ₪":     f"₪{rev:,.0f}",
+            "עלות ₪":      f"₪{cost:,.0f}",
+            "רווח ₪":      f"₪{prof:,.0f}",
+            "מרג׳ין":      f"{mgn}%",
+            "הכנסה שנתית": f"₪{rev*12:,.0f}",
+            "רווח שנתי":   f"₪{prof*12:,.0f}",
+        })
+    st.dataframe(pd.DataFrame(co_rows), use_container_width=True, hide_index=True)
+
+    # ── P&L by Category ───────────────────────────────────────────────
+    st.markdown("#### לפי קטגוריית רכב")
+    cat_rows = []
+    for cat in CATEGORIES:
+        veh  = [v for v in db if v.get("category") == cat]
+        if not veh: continue
+        rev  = sum(PRICE_USD.get(cat, 2475) * fx_use for _ in veh)
+        cost = sum(COSTS_ILS.get(cat, {}).get(v.get("company","")) or 0 for v in veh)
+        prof = rev - cost
+        mgn  = round(prof / rev * 100, 1) if rev else 0
+        price_usd = PRICE_USD.get(cat, 2475)
+        co_breakdown = {}
+        for co in COMPANIES:
+            n = sum(1 for v in veh if v.get("company") == co)
+            if n: co_breakdown[co] = n
+        cat_rows.append({
+            "קטגוריה":       cat,
+            "רכבים":         len(veh),
+            "מחיר $ לרכב":   f"${price_usd:,}",
+            "הכנסה ₪":       f"₪{rev:,.0f}",
+            "עלות ₪":        f"₪{cost:,.0f}",
+            "רווח ₪":        f"₪{prof:,.0f}",
+            "מרג׳ין":        f"{mgn}%",
+            "חברות":         " | ".join(f"{co}({n})" for co, n in co_breakdown.items()),
+        })
+    st.dataframe(pd.DataFrame(cat_rows), use_container_width=True, hide_index=True)
+
+    # ── Annual projection ─────────────────────────────────────────────
+    st.markdown("#### תחזית שנתית")
+    c1, c2, c3 = st.columns(3)
+    kpi(c1, f"₪{total_rev*12:,.0f}",    "הכנסה שנתית צפויה",  "#1D9E75")
+    kpi(c2, f"₪{total_cost*12:,.0f}",   "עלות שנתית צפויה",   "#C62828")
+    kpi(c3, f"₪{total_profit*12:,.0f}", "רווח שנתי צפוי",     "#1D9E75" if total_profit >= 0 else "#C62828")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.caption(f"* תחזית מבוססת על {total_veh} רכבים פעילים × 12 חודשים  |  שער: $1 = ₪{fx_use}")
+
+    # ── Vehicles without cost data ────────────────────────────────────
+    no_cost = [v for v in db if not COSTS_ILS.get(v.get("category",""), {}).get(v.get("company",""))]
+    if no_cost:
+        with st.expander(f"⚠️ {len(no_cost)} רכבים ללא נתוני עלות — לחץ לפירוט"):
+            nc_df = pd.DataFrame(no_cost)[["company","vehicle_num","category","model"]].rename(
+                columns={"company":"חברה","vehicle_num":"מס׳ רכב","category":"קטגוריה","model":"דגם"})
+            st.dataframe(nc_df, use_container_width=True, hide_index=True)
+            st.info("כדי להוסיף עלויות — עדכן את מילון COSTS_ILS בקוד")
+
+
 def page_users():
     st.markdown('<div class="page-title">👥 ניהול משתמשים</div>', unsafe_allow_html=True)
     users = get_users()
@@ -579,9 +690,9 @@ def main():
         st.markdown(f"<small style='color:#999'>{user['email']}</small>", unsafe_allow_html=True)
         st.divider()
 
-        pages_all    = ["📊 דשבורד","📂 העלאת קובץ ספק","➕ הוספת רכב","🔍 חיפוש ועריכה","📤 יצוא Excel","👥 משתמשים"]
-        pages_editor = ["📊 דשבורד","📂 העלאת קובץ ספק","➕ הוספת רכב","🔍 חיפוש ועריכה","📤 יצוא Excel"]
-        pages_viewer = ["📊 דשבורד","🔍 חיפוש ועריכה","📤 יצוא Excel"]
+        pages_all    = ["📊 דשבורד","📂 העלאת קובץ ספק","➕ הוספת רכב","🔍 חיפוש ועריכה","💰 רווח והפסד","📤 יצוא Excel","👥 משתמשים"]
+        pages_editor = ["📊 דשבורד","📂 העלאת קובץ ספק","➕ הוספת רכב","🔍 חיפוש ועריכה","💰 רווח והפסד","📤 יצוא Excel"]
+        pages_viewer = ["📊 דשבורד","🔍 חיפוש ועריכה","💰 רווח והפסד","📤 יצוא Excel"]
 
         allowed = pages_all if role=="admin" else (pages_editor if role=="editor" else pages_viewer)
         page = st.radio("", allowed, label_visibility="collapsed")
@@ -596,6 +707,7 @@ def main():
     elif "העלאת קובץ"      in page: page_upload(db)
     elif "הוספת רכב"       in page: page_add(db)
     elif "חיפוש"           in page: page_search(db, role)
+    elif "רווח והפסד"      in page: page_pnl(db, fx)
     elif "יצוא"            in page: page_export(db, fx)
     elif "משתמשים"         in page: page_users()
 
